@@ -34,7 +34,7 @@ eval_interval = 300
 learning_rate = 3e-4
 device = get_backend()
 eval_iters = 200
-n_embed = 32
+n_embd = 32
 # ------------
 
 torch.manual_seed(1337)
@@ -87,9 +87,9 @@ class Head(nn.Module):
 
     def __init__(self, head_size):
         super().__init__()
-        self.key = nn.Linear(n_embed, head_size, bias=False)
-        self.query = nn.Linear(n_embed, head_size, bias=False)
-        self.value = nn.Linear(n_embed, head_size, bias=False)
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, x):
@@ -117,17 +117,18 @@ class Head(nn.Module):
         return out
     
 class MultiHeadAttention(nn.Module):
-    """
-    Multiple heads of attention running in parallel
-    """
+    """ multiple heads of self-attention in parallel """
 
     def __init__(self, num_heads, head_size):
         super().__init__()
-
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(head_size * num_heads, n_embd)
+        # self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        # out = self.dropout(self.proj(out))
+        return out
 
 class FeedFoward(nn.Module):
     """ a simple linear layer followed by a non-linearity """
@@ -144,34 +145,54 @@ class FeedFoward(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+class Block(nn.Module):
+    """ Transformer block: communication followed by computation """
+
+    def __init__(self, n_embd, n_head):
+        # n_embd: embedding dimension, n_head: the number of heads we'd like
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        # Residual connections because we are adding x + self.sa
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
 
     def __init__(self):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
-        self.position_embedding_table = nn.Embedding(block_size, n_embed)
-        self.sa_heads = MultiHeadAttention(4, n_embed//4) # 4 heads of 8 dimensions 
-        self.ffwd = FeedFoward(n_embed)
-        self.lm_head = nn.Linear(n_embed, vocab_size)
+        self.token_embdding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embdding_table = nn.Embedding(block_size, n_embd)
+        self.sa_heads = MultiHeadAttention(4, n_embd//4) # 4 heads of 8 dimensions 
+        self.blocks = nn.Sequential(
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+            Block(n_embd, n_head=4),
+        )
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
 
         # idx and targets are both (B,T) tensor of integers
-        token_emb = self.token_embedding_table(idx) # (B,T,C)
+        token_emb = self.token_embdding_table(idx) # (B,T,C)
 
         # the position embeddings are a learnable embedding block
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        pos_emb = self.position_embdding_table(torch.arange(T, device=device)) # (T,C)
 
         # holds both the token embeddings and the position in which they occur
         x = token_emb + pos_emb # (B,T,C)
 
         # feed into self attention head
-        x = self.sa_heads(x)
-
-        x = self.ffwd(x)
+        x = self.blocks(x)
 
         logits = self.lm_head(x) # (B,T,vocab_size)
 
