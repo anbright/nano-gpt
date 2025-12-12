@@ -28,13 +28,16 @@ def get_backend():
 
 # hyperparameters
 batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 8 # what is the maximum context length for predictions?
+block_size = 256 # what is the maximum context length for predictions?
 max_iters = 5000
-eval_interval = 300
+eval_interval = 500
 learning_rate = 3e-4
 device = get_backend()
 eval_iters = 200
-n_embd = 32
+n_embd = 384
+n_heads = 6
+n_layer = 6
+dropout = 0.2
 # ------------
 
 torch.manual_seed(1337)
@@ -92,6 +95,8 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
         # input of size (batch, time-step, channels)
         # output of size (batch, time-step, head size)
@@ -107,7 +112,7 @@ class Head(nn.Module):
         
         # perform softmax
         wei = F.softmax(wei, dim=-1) # (B, T, T)
-        # wei = self.dropout(wei)
+        wei = self.dropout(wei)
 
         # perform the weighted aggregation of the values
 
@@ -123,11 +128,11 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(head_size * num_heads, n_embd)
-        # self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1)
-        # out = self.dropout(self.proj(out))
+        out = self.dropout(self.proj(out))
         return out
 
 class FeedFoward(nn.Module):
@@ -139,7 +144,7 @@ class FeedFoward(nn.Module):
             nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
             nn.Linear(4 * n_embd, n_embd),
-            # nn.Dropout(dropout),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -172,13 +177,20 @@ class BigramLanguageModel(nn.Module):
         self.token_embdding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embdding_table = nn.Embedding(block_size, n_embd)
         self.sa_heads = MultiHeadAttention(4, n_embd//4) # 4 heads of 8 dimensions 
-        self.blocks = nn.Sequential(
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            nn.LayerNorm(n_embd)
-        )
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_heads) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
+
+        # better init for weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -194,6 +206,9 @@ class BigramLanguageModel(nn.Module):
 
         # feed into self attention head
         x = self.blocks(x)
+
+        # Apply layer norm
+        x = self.ln_f(x)
 
         logits = self.lm_head(x) # (B,T,vocab_size)
 
