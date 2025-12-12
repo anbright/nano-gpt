@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from datetime import datetime
 
 """
 Determines the correct backend architecture to train on. Extends support from 
@@ -261,6 +262,13 @@ for iter in range(max_iters):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+save_path = f"nanogpt_weights_{timestamp}.pt"
+
+torch.save(model.state_dict(), save_path)
+print(f"Model saved to {save_path}")
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
