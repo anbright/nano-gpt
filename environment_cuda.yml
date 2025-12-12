@@ -1,4 +1,4 @@
-name: NanoGPT
+name: NanoGPT_CUDA
 channels:
   - pytorch
   - nvidia
