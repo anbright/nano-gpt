@@ -31,7 +31,7 @@ batch_size = 32 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
 max_iters = 5000
 eval_interval = 300
-learning_rate = 1e-3
+learning_rate = 3e-4
 device = get_backend()
 eval_iters = 200
 n_embed = 32
@@ -100,7 +100,7 @@ class Head(nn.Module):
         q = self.query(x) # (B,T,hs)
 
         # compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * C**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
+        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
 
         # mask future tokens
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
@@ -115,6 +115,34 @@ class Head(nn.Module):
         out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
 
         return out
+    
+class MultiHeadAttention(nn.Module):
+    """
+    Multiple heads of attention running in parallel
+    """
+
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1)
+
+class FeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
+
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            # nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        return self.net(x)
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -124,8 +152,9 @@ class BigramLanguageModel(nn.Module):
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embed)
         self.position_embedding_table = nn.Embedding(block_size, n_embed)
+        self.sa_heads = MultiHeadAttention(4, n_embed//4) # 4 heads of 8 dimensions 
+        self.ffwd = FeedFoward(n_embed)
         self.lm_head = nn.Linear(n_embed, vocab_size)
-        self.sa_head = Head(n_embed)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -140,9 +169,11 @@ class BigramLanguageModel(nn.Module):
         x = token_emb + pos_emb # (B,T,C)
 
         # feed into self attention head
-        x = self.sa_head(x)
+        x = self.sa_heads(x)
 
-        logits = self.lm_head(token_emb) # (B,T,vocab_size)
+        x = self.ffwd(x)
+
+        logits = self.lm_head(x) # (B,T,vocab_size)
 
         if targets is None:
             loss = None
